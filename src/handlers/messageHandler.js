@@ -27,7 +27,6 @@ async function messageHandler(sock, msg) {
         if (!cmd) return;
 
         await handleCommand(sock, msg, args, cmd.toLowerCase());
-
     } catch (error) {
         logger.error('Error in message handler:', error);
     }
