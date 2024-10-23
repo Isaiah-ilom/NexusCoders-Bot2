@@ -16,7 +16,6 @@ async function connectToDatabase() {
 }
 
 mongoose.connection.on('disconnected', () => {
-    logger.warn('MongoDB disconnected. Attempting to reconnect...');
     setTimeout(connectToDatabase, 5000);
 });
 
