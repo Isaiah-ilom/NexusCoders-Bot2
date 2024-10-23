@@ -18,7 +18,6 @@ const logger = require('./src/utils/logger.js');
 const messageHandler = require('./src/handlers/messageHandler.js');
 const config = require('./src/config.js');
 const { initializeCommands } = require('./src/handlers/commandHandler.js');
-const { startupMessage } = require('./src/utils/messages.js');
 
 const msgRetryCounterCache = new NodeCache({
     stdTTL: 3600,
@@ -43,16 +42,6 @@ let isConnected = false;
 const MAX_RECONNECT_ATTEMPTS = 10;
 const RECONNECT_INTERVAL = 3000;
 const sessionDir = path.join(process.cwd(), 'session');
-
-const browserConfig = {
-    browser: ['Chrome (Linux)', '', ''],
-    headerHost: 'web.whatsapp.com',
-    webVersion: '2.2326.49',
-    platform: 'Linux',
-    browserName: 'Chrome',
-    sourceUrl: 'https://web.whatsapp.com/',
-    webSocketUrl: 'wss://web.whatsapp.com/ws/chat',
-};
 
 async function displayBanner() {
     return new Promise((resolve) => {
@@ -95,35 +84,6 @@ async function loadSessionData() {
     }
 }
 
-async function sendKeepAlive() {
-    if (sock && isConnected) {
-        try {
-            await sock.sendPresenceUpdate('available');
-        } catch (error) {
-            logger.error('Keep-alive error:', error);
-        }
-    }
-}
-
-function setupKeepAlive() {
-    setInterval(sendKeepAlive, 60000);
-}
-
-async function handleIncomingMessage(msg) {
-    if (!msg.key.fromMe) {
-        try {
-            await messageHandler(sock, msg);
-        } catch (error) {
-            logger.error('Message handling error:', error);
-            if (msg.key.remoteJid) {
-                await sock.sendMessage(msg.key.remoteJid, {
-                    text: "Sorry, I encountered an error processing your message."
-                }).catch(logger.error);
-            }
-        }
-    }
-}
-
 async function connectToWhatsApp() {
     try {
         const { state, saveCreds } = await useMultiFileAuthState(sessionDir);
@@ -132,27 +92,14 @@ async function connectToWhatsApp() {
         const socketConfig = {
             version,
             auth: state,
-            printQRInTerminal: true,
+            printQRInTerminal: false,
             logger: P({ level: 'silent' }),
             msgRetryCounterCache,
             defaultQueryTimeoutMs: 120000,
             connectTimeoutMs: 120000,
-            navigationTimeoutMs: 120000,
-            keepAliveIntervalMs: 30000,
-            emitOwnEvents: true,
+            browser: ['Chrome (Linux)', '', ''],
             markOnlineOnConnect: true,
-            retryRequestDelayMs: 2000,
-            maxRetries: 5,
-            browser: browserConfig.browser,
-            waWebSocketUrl: browserConfig.webSocketUrl,
-            connectCooldownMs: 4000,
-            phoneResponseTime: 40000,
-            qrTimeout: 40000,
-            userAgent: `WhatsApp/2.2326.49 Chrome/112.0.5615.49 Linux`,
-            customUploadHosts: true,
-            getMessage: async () => ({ conversation: config.botName }),
-            generateHighQualityLinkPreview: true,
-            syncFullHistory: false
+            generateHighQualityLinkPreview: true
         };
 
         sock = makeWASocket(socketConfig);
@@ -162,27 +109,18 @@ async function connectToWhatsApp() {
             const { connection, lastDisconnect } = update;
 
             if (connection === 'close') {
-                const statusCode = lastDisconnect?.error?.output?.statusCode;
-                const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
+                const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
                 isConnected = false;
-
-                logger.info(`Connection closed. Status code: ${statusCode}`);
 
                 if (shouldReconnect && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
                     reconnectAttempts++;
-                    logger.info(`Reconnecting... Attempt ${reconnectAttempts}`);
-                    setTimeout(async () => {
-                        await cleanTempFiles();
-                        connectToWhatsApp();
-                    }, RECONNECT_INTERVAL * reconnectAttempts);
+                    setTimeout(connectToWhatsApp, RECONNECT_INTERVAL * reconnectAttempts);
                 } else {
-                    logger.error('Connection closed permanently');
                     process.exit(1);
                 }
             } else if (connection === 'open') {
                 isConnected = true;
                 reconnectAttempts = 0;
-                logger.info('Connected to WhatsApp');
                 
                 if (initialConnection) {
                     await sock.sendMessage(sock.user.id, { 
@@ -197,25 +135,11 @@ async function connectToWhatsApp() {
         });
 
         sock.ev.on('creds.update', saveCreds);
-
-        sock.ev.on('messages.upsert', async ({ messages, type }) => {
-            if (type === 'notify') {
-                for (const msg of messages) {
-                    await handleIncomingMessage(msg);
+        sock.ev.on('messages.upsert', async ({ messages }) => {
+            for (const msg of messages) {
+                if (!msg.key.fromMe) {
+                    await messageHandler(sock, msg);
                 }
-            }
-        });
-
-        sock.ev.on('presence.update', json => logger.info('presence:', json));
-        sock.ev.on('chats.update', m => logger.info('chats update:', m));
-        sock.ev.on('contacts.update', m => logger.info('contacts update:', m));
-
-        sock.ws.on('CB:call', async (json) => {
-            if (json.content[0].tag === 'offer') {
-                const callerId = json.content[0].attrs['call-creator'];
-                await sock.sendMessage(callerId, { 
-                    text: '❌ Calls are not supported. Please send a message instead.' 
-                });
             }
         });
 
@@ -236,7 +160,6 @@ async function startServer() {
     app.use(express.urlencoded({ extended: true }));
     
     app.get('/', (_, res) => res.send(`${config.botName} is running!`));
-    
     app.get('/status', (_, res) => {
         res.json({
             status: isConnected ? 'connected' : 'disconnected',
@@ -245,60 +168,29 @@ async function startServer() {
         });
     });
 
-    const server = app.listen(port, '0.0.0.0', () => {
+    app.listen(port, '0.0.0.0', () => {
         logger.info(`Server running on port ${port}`);
     });
-
-    server.keepAliveTimeout = 120000;
-    server.headersTimeout = 120000;
 }
-
-process.on('SIGTERM', async () => {
-    logger.info('SIGTERM received. Cleaning up...');
-    await cleanTempFiles();
-    process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-    logger.info('SIGINT received. Cleaning up...');
-    await cleanTempFiles();
-    process.exit(0);
-});
 
 async function initialize() {
     try {
         await displayBanner();
         await ensureDirectories();
         await cleanTempFiles();
-
         const hasSession = await loadSessionData();
         if (!hasSession) {
             process.exit(1);
         }
-
         await connectToDatabase();
         await initializeCommands();
         await connectToWhatsApp();
         await startServer();
-        setupKeepAlive();
 
-        const handleError = async (error) => {
-            logger.error('Critical error:', error);
-            if (error?.message?.includes('Connection Closed') && reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-                reconnectAttempts++;
-                setTimeout(connectToWhatsApp, RECONNECT_INTERVAL);
-            } else {
-                await cleanTempFiles();
-                process.exit(1);
-            }
-        };
-
-        process.on('unhandledRejection', handleError);
-        process.on('uncaughtException', handleError);
-
+        process.on('unhandledRejection', logger.error);
+        process.on('uncaughtException', logger.error);
     } catch (error) {
         logger.error('Initialization failed:', error);
-        await cleanTempFiles();
         process.exit(1);
     }
 }
