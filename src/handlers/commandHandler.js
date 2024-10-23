@@ -11,7 +11,6 @@ async function loadCommand(commandPath) {
         const command = require(commandPath);
         if (command.name) {
             commands.set(command.name, command);
-            logger.info(`Loaded command: ${command.name}`);
             if (command.aliases) {
                 command.aliases.forEach(alias => commands.set(alias, command));
             }
@@ -40,7 +39,6 @@ async function initializeCommands() {
     commands.clear();
     const commandsDir = path.join(__dirname, '../commands');
     await loadCommandsFromDirectory(commandsDir);
-    logger.info(`Loaded ${commands.size} commands`);
     return commands;
 }
 
